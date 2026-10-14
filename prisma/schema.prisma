@@ -1,0 +1,271 @@
+// ========================================================================
+// ESQUEMA DE BASE DE DATOS PRISMA - MOTION LAB (prisma/schema.prisma)
+// ========================================================================
+// Prisma ORM conecta la aplicación Next.js con MySQL alojado en Railway
+// o entorno local. Modela los usuarios, autenticación NextAuth, perfiles
+// deportivos, rutinas en 3 bloques (Movilidad, Activación, Desarrollo),
+// ejercicios y series interactivas.
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ------------------------------------------------------------------------
+// ENUMERACIONES (Valores fijos permitidos)
+// ------------------------------------------------------------------------
+
+enum Rol {
+  ALUMNO
+  ENTRENADOR
+}
+
+enum EstadoPago {
+  PENDIENTE
+  ACTIVO
+}
+
+enum TipoPlan {
+  BASE
+  PREMIUM
+}
+
+enum TipoBloque {
+  MOVILIDAD
+  ACTIVACION
+  DESARROLLO
+}
+
+enum EstadoRutina {
+  ACTIVA
+  COMPLETADA
+}
+
+// ========================================================================
+// MODELO: Usuario (Alumnos y Entrenador Matías)
+// ========================================================================
+model Usuario {
+  id            String      @id @default(cuid())
+  nombre        String
+  apellido      String?
+  email         String      @unique
+  emailVerified DateTime?
+  image         String?
+  
+  // passwordHash para quienes se registren con correo y contraseña (sin Google)
+  passwordHash  String?
+  
+  rol           Rol         @default(ALUMNO)
+  whatsapp      String?
+  peso          Float?      // Peso corporal en Kg
+  altura        Float?      // Altura en cm
+  lesiones      String?     @db.Text
+  
+  // Estado de pago para habilitar la visualización de rutinas
+  estadoPago    EstadoPago  @default(PENDIENTE)
+  tipoPlan      TipoPlan    @default(BASE)
+
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // Relaciones requeridas por NextAuth
+  accounts      Account[]
+  sessions      Session[]
+
+  // Relación con el perfil deportivo del alumno
+  perfilDeportivo PerfilDeportivo?
+
+  // Rutinas asignadas (como alumno o como entrenador que las crea)
+  rutinasComoAlumno     Rutina[] @relation("RutinasAlumno")
+  rutinasComoEntrenador Rutina[] @relation("RutinasEntrenador")
+
+  @@map("usuarios")
+}
+
+// ========================================================================
+// MODELOS REQUERIDOS POR NEXTAUTH (OAuth Google y Sesiones)
+// ========================================================================
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user Usuario @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         Usuario  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ========================================================================
+// MODELO: PerfilDeportivo (Datos recopilados en el Onboarding)
+// ========================================================================
+model PerfilDeportivo {
+  id             String   @id @default(cuid())
+  usuarioId      String   @unique
+  usuario        Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  objetivo       String   // Rendimiento, Estética, Salud
+  deporte        String?  // Ej. Fútbol, Rugby, Running, Crossfit
+  club           Boolean  @default(false) // Si compite o entrena en club federado
+  nivel          String   // Principiante, Intermedio, Avanzado
+  focos          String   // "Fuerza, Velocidad, Técnica, Resistencia"
+  disponibilidad String   // "2 días", "3 días", "4 días", "5+ días"
+
+  // Campos condicionales para nivel Intermedio / Avanzado con foco Fuerza o Técnica
+  rmEstimado     String?  // Ej. "Sentadilla 120kg, Banco 90kg"
+  puntosDebiles  String?  @db.Text
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("perfiles_deportivos")
+}
+
+// ========================================================================
+// MODELO: Rutina (Asignada por Matías al Alumno)
+// ========================================================================
+model Rutina {
+  id            String       @id @default(cuid())
+  nombre        String       // Ej. "Semana 1 - Fuerza y Potencia"
+  descripcion   String?      @db.Text
+  fechaAsignada DateTime     @default(now())
+  estado        EstadoRutina @default(ACTIVA)
+
+  alumnoId      String
+  alumno        Usuario      @relation("RutinasAlumno", fields: [alumnoId], references: [id], onDelete: Cascade)
+
+  entrenadorId  String
+  entrenador    Usuario      @relation("RutinasEntrenador", fields: [entrenadorId], references: [id], onDelete: Cascade)
+
+  // Una rutina se divide estrictamente en 3 Bloques: Movilidad, Activación, Desarrollo
+  bloques       Bloque[]
+
+  // Check-in Pre-Entrenamiento (UX rápido de 1 clic)
+  energiaInicial      Int?     // 1 (Agotado/a) al 5 (A tope)
+  animoInicial        Int?     // 1 (Muy estresado) al 5 (Excelente)
+  descansoInicial     String?  // Mal, Regular, Bien, Excelente
+
+  // Check-in Post-Entrenamiento (Impacto y RPE)
+  animoFinal          Int?     // 1 (Peor), 2 (Igual), 3 (Mucho mejor)
+  esfuerzoFinal       Int?     // 1 al 10 (Escala RPE de esfuerzo)
+  desahogoFinal       String?  // Sí totalmente, Un poco, No sigo a mil
+  fechaCompletada     DateTime?
+
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@map("rutinas")
+}
+
+// ========================================================================
+// MODELO: RutinaRealizada (Registro histórico y feedback de cada sesión)
+// ========================================================================
+model RutinaRealizada {
+  id              String       @id @default(cuid())
+  rutinaId        String?
+  alumnoId        String
+  fecha           DateTime     @default(now())
+
+  // Check-in Pre-entrenamiento
+  energiaInicial  Int?         // 1 (Agotado) al 5 (A tope)
+  animoInicial    Int?         // 1 (Muy estresado) al 5 (Excelente)
+  descansoInicial String?      // Mal, Regular, Bien, Excelente
+
+  // Check-in Post-entrenamiento
+  animoFinal      Int?         // 1 (Peor), 2 (Igual), 3 (Mucho mejor)
+  esfuerzoFinal   Int?         // 1 al 10 (Escala RPE de esfuerzo)
+  desahogoFinal   String?      // Sí totalmente, Un poco, No sigo a mil
+
+  alertaFatiga    Boolean      @default(false) // True si marcó Agotado o Muy Estresado
+  createdAt       DateTime     @default(now())
+
+  @@map("rutinas_realizadas")
+}
+
+// ========================================================================
+// MODELO: Bloque (MOVILIDAD, ACTIVACIÓN, DESARROLLO)
+// ========================================================================
+model Bloque {
+  id         String             @id @default(cuid())
+  rutinaId   String
+  rutina     Rutina             @relation(fields: [rutinaId], references: [id], onDelete: Cascade)
+
+  tipo       TipoBloque         // MOVILIDAD, ACTIVACION, DESARROLLO
+  orden      Int                // 1 = Movilidad, 2 = Activación, 3 = Desarrollo
+  
+  ejercicios EjercicioRealizado[]
+
+  @@map("bloques")
+}
+
+model EjercicioRealizado {
+  id                 String   @id @default(cuid())
+  bloqueId           String
+  bloque             Bloque   @relation(fields: [bloqueId], references: [id], onDelete: Cascade)
+
+  nombre             String   // Ej. "Sentadilla Trasera con Barra"
+  indicacionProfe    String?  // Ej. "3x8 | RIR Objetivo: 2 | Tempo 3010"
+  rirObjetivo        Int?     // Repeticiones en reserva sugeridas por el profe
+  
+  videoUrl           String?  @db.Text // Link de YouTube o URL de video
+  videoRecomendacion String?  @db.Text // Recomendaciones a tener en cuenta en el video
+  
+  // Campo clave de UX: Notas y observaciones del alumno al entrenar
+  observacion        String?  @db.Text
+  completado         Boolean  @default(false)
+
+  // En el bloque de Desarrollo, el ejercicio se divide en series
+  series             Serie[]
+
+  @@map("ejercicios_realizados")
+}
+
+// ========================================================================
+// MODELO: Serie (Detalle de cada serie realizada por el alumno)
+// ========================================================================
+model Serie {
+  id                  String             @id @default(cuid())
+  ejercicioId         String
+  ejercicio           EjercicioRealizado @relation(fields: [ejercicioId], references: [id], onDelete: Cascade)
+
+  numeroSerie         Int                // Serie 1, Serie 2, Serie 3...
+  repsRealizadas      Int?               // Repeticiones reales hechas
+  cargaKg             Float?             // Peso levantado en Kilogramos
+  rir                 Int?               // Repeticiones en reserva sentidas (0 a 10)
+  rpe                 Float?             // Escala de esfuerzo percibido (1 a 10)
+  completado          Boolean            @default(false)
+
+  @@map("series")
+}
