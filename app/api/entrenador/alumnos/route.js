@@ -9,230 +9,292 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import bcrypt from 'bcryptjs';
+import {
+  obtenerCheckinsDeStore,
+  obtenerDetalleSesionesDeStore,
+  guardarAlumnoEnStore,
+  obtenerAlumnoDeStore,
+  obtenerAlumnosDeStore,
+  obtenerChequeosBienestarDeStore,
+  eliminarAlumnoDeStore,
+  esAlumnoEliminadoEnStore,
+} from '@/lib/fallbackStore';
+import { ALUMNOS_DEMO } from '@/lib/demoAlumnos';
+import { actualizarAlumno } from '@/lib/actualizarAlumno';
+import { requireTrainer } from '@/lib/requireTrainer';
+
+function calcularBienestar(checkins) {
+  if (!checkins || checkins.length === 0) {
+    return { alertaBienestar: 'VERDE', consecutivosFatiga: 0 };
+  }
+
+  const ultimo = checkins[0]; // El check-in más reciente
+
+  // Fatiga crítica/extrema en la última sesión:
+  // 1. Energía 1 (Agotado/a)
+  // 2. Ánimo 1 (Muy estresado)
+  // 3. Post-entreno: RPE >= 9 con ánimo peor
+  const fatigaExtremaUltimo =
+    (ultimo.energiaInicial !== null && ultimo.energiaInicial !== undefined && Number(ultimo.energiaInicial) <= 1) ||
+    (ultimo.animoInicial !== null && ultimo.animoInicial !== undefined && Number(ultimo.animoInicial) <= 1) ||
+    (ultimo.esfuerzoFinal !== null && ultimo.esfuerzoFinal !== undefined && Number(ultimo.esfuerzoFinal) >= 9 && Number(ultimo.animoFinal) === 1);
+
+  // Fatiga moderada en la última sesión:
+  // Energía 2 (Bajo), Ánimo 2 (Desmotivado), Descanso 'Mal', o RPE >= 9
+  const fatigaModeradaUltimo =
+    (ultimo.energiaInicial !== null && ultimo.energiaInicial !== undefined && Number(ultimo.energiaInicial) <= 2) ||
+    (ultimo.animoInicial !== null && ultimo.animoInicial !== undefined && Number(ultimo.animoInicial) <= 2) ||
+    ultimo.descansoInicial === 'Mal' ||
+    (ultimo.esfuerzoFinal !== null && ultimo.esfuerzoFinal !== undefined && Number(ultimo.esfuerzoFinal) >= 9) ||
+    ultimo.desahogoFinal === 'No, sigo a mil';
+
+  // Conteo de sesiones consecutivas con fatiga
+  let consecutivos = 0;
+  for (const c of checkins) {
+    const esFatiga =
+      (c.energiaInicial !== null && c.energiaInicial !== undefined && Number(c.energiaInicial) <= 2) ||
+      (c.animoInicial !== null && c.animoInicial !== undefined && Number(c.animoInicial) <= 2) ||
+      c.descansoInicial === 'Mal' ||
+      (c.esfuerzoFinal !== null && c.esfuerzoFinal !== undefined && Number(c.esfuerzoFinal) >= 9);
+
+    if (esFatiga) {
+      consecutivos++;
+    } else {
+      break;
+    }
+  }
+
+  if (fatigaExtremaUltimo || consecutivos >= 2) {
+    return { alertaBienestar: 'ROJA', consecutivosFatiga: Math.max(consecutivos, 1) };
+  } else if (fatigaModeradaUltimo || consecutivos >= 1) {
+    return { alertaBienestar: 'AMARILLA', consecutivosFatiga: consecutivos };
+  } else {
+    return { alertaBienestar: 'VERDE', consecutivosFatiga: 0 };
+  }
+}
+
+/**
+ * Traduce el último chequeo de bienestar a una alerta simple para la tabla
+ * del entrenador. Es independiente de la fatiga física del entrenamiento.
+ */
+function calcularAlertaMental(chequeos = []) {
+  const ultimo = chequeos[0];
+  if (!ultimo) {
+    return { alertaMental: 'SIN_DATOS', ultimoChequeoBienestar: null };
+  }
+
+  const alertaMental =
+    ultimo.nivelGeneral === 'ALERTA'
+      ? 'ROJA'
+      : ultimo.nivelGeneral === 'ATENCION'
+        ? 'AMARILLA'
+        : 'VERDE';
+
+  return { alertaMental, ultimoChequeoBienestar: ultimo };
+}
 
 export async function GET() {
+  const auth = await requireTrainer();
+  if (auth.response) return auth.response;
+
   try {
     let alumnos = [];
+    let chequeosBienestarDB = [];
 
-    try {
-      alumnos = await prisma.usuario.findMany({
-        where: { rol: 'ALUMNO' },
-        include: {
-          perfilDeportivo: true,
-          rutinasComoAlumno: {
-            select: { 
-              id: true, 
-              nombre: true, 
-              fechaAsignada: true,
-              estado: true,
-              energiaInicial: true,
-              animoInicial: true,
-              descansoInicial: true,
-              animoFinal: true,
-              esfuerzoFinal: true,
-              desahogoFinal: true,
-              fechaCompletada: true,
+    if (process.env.DATABASE_URL) {
+      try {
+        alumnos = await prisma.usuario.findMany({
+          where: { rol: 'ALUMNO' },
+          include: {
+            perfilDeportivo: true,
+            rutinasComoAlumno: {
+              select: {
+                id: true,
+                nombre: true,
+                fechaAsignada: true,
+                estado: true,
+                energiaInicial: true,
+                animoInicial: true,
+                descansoInicial: true,
+                animoFinal: true,
+                esfuerzoFinal: true,
+                desahogoFinal: true,
+                fechaCompletada: true,
+              },
+              orderBy: { createdAt: 'desc' },
+              take: 10,
             },
-            orderBy: { createdAt: 'desc' },
-            take: 5,
           },
-        },
-        orderBy: { createdAt: 'desc' },
-      });
+          orderBy: { createdAt: 'desc' },
+        });
 
-      // Calcular alertas de fatiga para alumnos reales
-      alumnos = alumnos.map((alumno) => {
-        const rutinas = alumno.rutinasComoAlumno || [];
-        const checkinsValidos = rutinas.filter((r) => r.energiaInicial || r.animoInicial);
-        let fatigaConsecutiva = 0;
-        for (const c of checkinsValidos) {
-          if (c.energiaInicial <= 1 || c.animoInicial <= 1) {
-            fatigaConsecutiva++;
-          } else {
-            break;
-          }
+        // Historial de chequeos de bienestar de todos los alumnos. Se usa para
+        // mostrar el estado mental más reciente en la tabla y en la ficha.
+        try {
+          chequeosBienestarDB = await prisma.chequeoBienestar.findMany({
+            orderBy: { fecha: 'desc' },
+            take: 500,
+          });
+        } catch (wellnessError) {
+          console.warn(
+            '⚠️ No se pudo consultar el historial de bienestar (se sigue con el resto del panel):',
+            wellnessError.message
+          );
         }
-        let alertaBienestar = 'VERDE';
-        if (fatigaConsecutiva >= 3) {
-          alertaBienestar = 'ROJA';
-        } else if (fatigaConsecutiva > 0 || (checkinsValidos[0] && (checkinsValidos[0].energiaInicial <= 2 || checkinsValidos[0].animoInicial <= 2))) {
-          alertaBienestar = 'AMARILLA';
-        }
+
+        // Mapear checkins y calcular alertas para alumnos de base de datos
+        alumnos = alumnos.map((alumno) => {
+          const rutinas = alumno.rutinasComoAlumno || [];
+          const checkinsRutinas = rutinas
+            .filter((r) => r.energiaInicial || r.animoInicial || r.descansoInicial)
+            .map((r, i) => ({
+              clase: r.nombre || `Sesión ${i + 1}`,
+              fecha: r.fechaCompletada ? new Date(r.fechaCompletada).toISOString().split('T')[0] : 'Reciente',
+              energiaInicial: r.energiaInicial,
+              animoInicial: r.animoInicial,
+              descansoInicial: r.descansoInicial,
+              esfuerzoFinal: r.esfuerzoFinal,
+              animoFinal: r.animoFinal,
+              desahogoFinal: r.desahogoFinal,
+            }));
+
+          const checkinsStore = obtenerCheckinsDeStore(alumno.id);
+          // Historial que ya existía en la versión anterior de Motion Lab.
+          // Se conserva como línea base hasta que la base sume nuevos check-ins.
+          const historialPrevio = ALUMNOS_DEMO.find((demo) => demo.id === alumno.id);
+          const checkinsActuales = [...checkinsStore, ...checkinsRutinas];
+          const checkinsCompletos = [
+            ...checkinsActuales,
+            ...(historialPrevio?.checkins || []),
+          ];
+
+          // Si todavía no hay check-ins nuevos, respetamos la alerta histórica
+          // guardada en la versión anterior. Con datos nuevos se recalcula.
+          const bienestar = checkinsActuales.length > 0
+            ? calcularBienestar(checkinsCompletos)
+            : {
+                alertaBienestar: historialPrevio?.alertaBienestar || 'VERDE',
+                consecutivosFatiga: Number(historialPrevio?.consecutivosFatiga || 0),
+              };
+
+          // Sesiones/días que el alumno ya completó en PostgreSQL (persistidas)
+          const rutinasCompletadasIds = rutinas
+            .filter((r) => r.fechaCompletada)
+            .map((r) => r.id);
+
+          return {
+            ...alumno,
+            alertaBienestar: bienestar.alertaBienestar,
+            consecutivosFatiga: bienestar.consecutivosFatiga,
+            sesionesBaseline: Number(historialPrevio?.sesionesBaseline || 0),
+            checkins: checkinsCompletos,
+            rutinasCompletadasIds,
+          };
+        });
+      } catch (dbErr) {
+        console.warn('⚠️ No se pudo consultar alumnos en PostgreSQL (modo demo):', dbErr.message);
+      }
+    }
+
+    // Filtrar alumnos que hayan sido eliminados en la base de datos o en memoria
+    alumnos = alumnos.filter((alumno) => !esAlumnoEliminadoEnStore(alumno.id));
+
+    // Datos de demostración si la base de datos está vacía o sin inicializar
+    if (!alumnos || alumnos.length === 0) {
+      alumnos = ALUMNOS_DEMO.filter((alumno) => !esAlumnoEliminadoEnStore(alumno.id));
+    }
+
+    // Aplicar los cambios guardados en memoria (modo demo) y sumar los
+    // alumnos creados cuando PostgreSQL no está disponible.
+    const alumnosEnStore = obtenerAlumnosDeStore();
+    const idsExistentes = new Set(alumnos.map((alumno) => alumno.id));
+    const alumnosNuevosDelStore = alumnosEnStore.filter(
+      (alumno) => alumno.creadoEnDemo && !idsExistentes.has(alumno.id)
+    );
+
+    if (alumnosNuevosDelStore.length > 0) {
+      alumnos = [...alumnosNuevosDelStore, ...alumnos];
+    }
+
+    alumnos = alumnos.map((alumno) => {
+      const cambios = obtenerAlumnoDeStore(alumno.id);
+      if (!cambios) return alumno;
+
+      return {
+        ...alumno,
+        ...cambios,
+        perfilDeportivo: {
+          ...(alumno.perfilDeportivo || {}),
+          ...(cambios.perfilDeportivo || {}),
+        },
+      };
+    });
+
+    // Sincronizar check-ins y sesiones completadas desde el almacén en memoria (fallbackStore)
+    alumnos = alumnos.map((alumno) => {
+      const checkinsStore = obtenerCheckinsDeStore(alumno.id);
+      const sesionesStore = obtenerDetalleSesionesDeStore(alumno.id);
+
+      // Sesiones completadas = historial base (demo o PostgreSQL) + sesiones registradas
+      // en memoria al finalizar cada día, evitando duplicar la misma rutina/día.
+      const completadasExtraDB = (alumno.rutinasCompletadasIds || []).filter(
+        (id) => !sesionesStore.rutinas.includes(id)
+      ).length;
+      const sesionesCompletadas =
+        Number(alumno.sesionesBaseline || 0) + sesionesStore.total + completadasExtraDB;
+
+      if (checkinsStore && checkinsStore.length > 0) {
+        // Filtrar duplicados por id si ya existen
+        const existentesIds = new Set((alumno.checkins || []).map((c) => c.id || c.clase));
+        const nuevosDeStore = checkinsStore.filter((c) => !existentesIds.has(c.id));
+        const checkinsCombinados = [...nuevosDeStore, ...(alumno.checkins || [])];
+        const { alertaBienestar, consecutivosFatiga } = calcularBienestar(checkinsCombinados);
 
         return {
           ...alumno,
           alertaBienestar,
-          consecutivosFatiga: fatigaConsecutiva,
-          checkins: checkinsValidos,
+          consecutivosFatiga,
+          checkins: checkinsCombinados,
+          sesionesCompletadas,
         };
-      });
-    } catch (dbErr) {
-      console.warn('⚠️ No se pudo consultar alumnos en MySQL (modo demo):', dbErr.message);
-    }
+      }
+      return { ...alumno, sesionesCompletadas };
+    });
 
-    // Datos de demostración si la base de datos está vacía o sin inicializar
-    if (!alumnos || alumnos.length === 0) {
-      alumnos = [
-        {
-          id: 'demo-alumno-1',
-          nombre: 'Juan',
-          apellido: 'Pérez',
-          email: 'juan.perez@ejemplo.com',
-          whatsapp: '+54 9 11 5555-0101',
-          peso: 78.5,
-          altura: 178,
-          lesiones: 'Molestia leve en rodilla derecha al bajar de 90°',
-          estadoPago: 'PENDIENTE',
-          tipoPlan: 'PREMIUM',
-          createdAt: new Date().toISOString(),
-          // Alerta Roja: 3 clases seguidas reportando Agotado o Muy Estresado
-          alertaBienestar: 'ROJA',
-          consecutivosFatiga: 3,
-          checkins: [
-            {
-              clase: 'Clase 3 (Ayer)',
-              fecha: '2026-10-13',
-              energiaInicial: 1, // Agotado
-              animoInicial: 1, // Muy estresado
-              descansoInicial: 'Mal',
-              esfuerzoFinal: 9,
-              animoFinal: 1, // Peor
-              desahogoFinal: 'No, sigo a mil',
-            },
-            {
-              clase: 'Clase 2 (Hace 3 días)',
-              fecha: '2026-10-11',
-              energiaInicial: 1, // Agotado
-              animoInicial: 2, // Desmotivado
-              descansoInicial: 'Mal',
-              esfuerzoFinal: 8,
-              animoFinal: 2, // Igual
-              desahogoFinal: 'Un poco',
-            },
-            {
-              clase: 'Clase 1 (Hace 5 días)',
-              fecha: '2026-10-09',
-              energiaInicial: 1, // Agotado
-              animoInicial: 1, // Muy estresado
-              descansoInicial: 'Regular',
-              esfuerzoFinal: 9,
-              animoFinal: 1, // Peor
-              desahogoFinal: 'No, sigo a mil',
-            },
-          ],
-          perfilDeportivo: {
-            objetivo: 'Rendimiento',
-            deporte: 'Fútbol',
-            club: true,
-            nivel: 'Intermedio',
-            focos: 'Fuerza, Velocidad',
-            disponibilidad: '4 días',
-            rmEstimado: 'Sentadilla 110kg, Banco 85kg',
-            puntosDebiles: 'Potencia de arranque y estabilidad unilateral',
-          },
-          rutinasComoAlumno: [],
-        },
-        {
-          id: 'demo-alumno-2',
-          nombre: 'Lucía',
-          apellido: 'Fernández',
-          email: 'lucia.f@ejemplo.com',
-          whatsapp: '+54 9 11 5555-0202',
-          peso: 62.0,
-          altura: 165,
-          lesiones: 'Sin lesiones',
-          estadoPago: 'ACTIVO',
-          tipoPlan: 'BASE',
-          createdAt: new Date().toISOString(),
-          // Alerta Verde: óptimo descanso y energía
-          alertaBienestar: 'VERDE',
-          consecutivosFatiga: 0,
-          checkins: [
-            {
-              clase: 'Clase 2 (Ayer)',
-              fecha: '2026-10-13',
-              energiaInicial: 5, // A tope
-              animoInicial: 5, // Excelente
-              descansoInicial: 'Excelente',
-              esfuerzoFinal: 8,
-              animoFinal: 3, // Mucho mejor
-              desahogoFinal: 'Sí, totalmente',
-            },
-            {
-              clase: 'Clase 1 (Hace 3 días)',
-              fecha: '2026-10-10',
-              energiaInicial: 4, // Con ganas
-              animoInicial: 4, // Bien
-              descansoInicial: 'Bien',
-              esfuerzoFinal: 7,
-              animoFinal: 3, // Mucho mejor
-              desahogoFinal: 'Sí, totalmente',
-            },
-          ],
-          perfilDeportivo: {
-            objetivo: 'Estética',
-            deporte: 'Fitness General',
-            club: false,
-            nivel: 'Principiante',
-            focos: 'Fuerza, Resistencia',
-            disponibilidad: '3 días',
-            rmEstimado: null,
-            puntosDebiles: null,
-          },
-          rutinasComoAlumno: [
-            {
-              id: 'rutina-demo-1',
-              nombre: 'Mesociclo 1 - Adaptación Anatómica',
-              fechaAsignada: new Date().toISOString(),
-            },
-          ],
-        },
-        {
-          id: 'demo-alumno-3',
-          nombre: 'Martín',
-          apellido: 'Benítez',
-          email: 'martin.b@ejemplo.com',
-          whatsapp: '+54 9 11 5555-0303',
-          peso: 82.0,
-          altura: 181,
-          lesiones: 'Sobrecarga en lumbares tras partidos de fin de semana',
-          estadoPago: 'ACTIVO',
-          tipoPlan: 'PREMIUM',
-          createdAt: new Date().toISOString(),
-          // Alerta Amarilla: 1 clase reciente de bajo descanso / estrés
-          alertaBienestar: 'AMARILLA',
-          consecutivosFatiga: 1,
-          checkins: [
-            {
-              clase: 'Clase 1 (Ayer)',
-              fecha: '2026-10-13',
-              energiaInicial: 2, // Bajo
-              animoInicial: 2, // Desmotivado
-              descansoInicial: 'Mal',
-              esfuerzoFinal: 7,
-              animoFinal: 2, // Igual
-              desahogoFinal: 'Un poco',
-            },
-          ],
-          perfilDeportivo: {
-            objetivo: 'Salud y Prevención',
-            deporte: 'Básquet',
-            club: true,
-            nivel: 'Intermedio',
-            focos: 'Movilidad, Fuerza Lumbar',
-            disponibilidad: '3 días',
-            rmEstimado: 'Sentadilla 90kg',
-            puntosDebiles: 'Cadena posterior y core anterior',
-          },
-          rutinasComoAlumno: [],
-        },
-      ];
-    }
+    // Combinar el historial de bienestar de PostgreSQL con el guardado en
+    // memoria y calcular la alerta mental más reciente para cada alumno.
+    alumnos = alumnos.map((alumno) => {
+      const deBaseDeDatos = chequeosBienestarDB.filter(
+        (chequeo) => chequeo.alumnoId === alumno.id
+      );
+      const deMemoria = obtenerChequeosBienestarDeStore(alumno.id);
+      const unicos = new Map();
+
+      [...deBaseDeDatos, ...deMemoria].forEach((chequeo) => {
+        if (chequeo?.id) unicos.set(chequeo.id, chequeo);
+      });
+
+      const chequeosBienestar = [...unicos.values()]
+        .sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime())
+        .slice(0, 5);
+
+      const { alertaMental, ultimoChequeoBienestar } =
+        calcularAlertaMental(chequeosBienestar);
+
+      return {
+        ...alumno,
+        chequeosBienestar,
+        ultimoChequeoBienestar,
+        alertaMental,
+      };
+    });
+
+    const alumnosActivos = alumnos.filter((alumno) => !esAlumnoEliminadoEnStore(alumno.id));
 
     return NextResponse.json({
       success: true,
-      total: alumnos.length,
-      alumnos,
+      total: alumnosActivos.length,
+      alumnos: alumnosActivos,
     });
   } catch (error) {
     console.error('❌ Error al obtener alumnos:', error);
@@ -243,7 +305,113 @@ export async function GET() {
   }
 }
 
+export async function PUT(req) {
+  const auth = await requireTrainer();
+  if (auth.response) return auth.response;
+
+  try {
+    let data;
+    try {
+      data = await req.json();
+    } catch {
+      return NextResponse.json(
+        { success: false, error: 'Los datos enviados no son válidos' },
+        { status: 400 }
+      );
+    }
+
+    const resultado = await actualizarAlumno(data.id, data);
+
+    if (!resultado.success) {
+      return NextResponse.json(resultado, { status: 400 });
+    }
+
+    return NextResponse.json(resultado);
+  } catch (error) {
+    console.error('Error al actualizar alumno:', error);
+    return NextResponse.json(
+      { success: false, error: 'Error al actualizar el alumno' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(req) {
+  const auth = await requireTrainer();
+  if (auth.response) return auth.response;
+
+  try {
+    const body = await req.json();
+    const alumnoId = body.alumnoId || body.id;
+    const nuevoEstado = body.estadoPago;
+
+    if (!alumnoId || !['PENDIENTE', 'ACTIVO'].includes(nuevoEstado)) {
+      return NextResponse.json(
+        { success: false, error: 'Estado de pago no válido' },
+        { status: 400 }
+      );
+    }
+
+    let alumnoActualizado = null;
+
+    if (process.env.DATABASE_URL) {
+      try {
+        alumnoActualizado = await prisma.usuario.update({
+          where: { id: alumnoId },
+          data: { estadoPago: nuevoEstado },
+          select: {
+            id: true,
+            nombre: true,
+            apellido: true,
+            email: true,
+            estadoPago: true,
+            tipoPlan: true,
+          },
+        });
+      } catch (dbErr) {
+        console.warn('⚠️ No se pudo actualizar el pago en PostgreSQL (modo demo):', dbErr.message);
+      }
+    }
+
+    // Respaldo en memoria para que el cambio se mantenga en modo demo
+    const base = ALUMNOS_DEMO.find((alumno) => alumno.id === alumnoId) || {};
+    const anterior = obtenerAlumnoDeStore(alumnoId) || {};
+
+    if (!alumnoActualizado) {
+      alumnoActualizado = {
+        ...base,
+        ...anterior,
+        id: alumnoId,
+        estadoPago: nuevoEstado,
+      };
+    }
+
+    guardarAlumnoEnStore(alumnoId, {
+      estadoPago: nuevoEstado,
+      nombre: alumnoActualizado.nombre,
+      apellido: alumnoActualizado.apellido,
+      email: alumnoActualizado.email,
+      tipoPlan: alumnoActualizado.tipoPlan,
+    });
+
+    return NextResponse.json({
+      success: true,
+      mensaje: `El estado de pago del alumno ha sido actualizado a ${nuevoEstado}`,
+      alumno: alumnoActualizado,
+    });
+  } catch (error) {
+    console.error('❌ Error al actualizar estado de pago:', error);
+    return NextResponse.json(
+      { success: false, error: 'Error al cambiar el estado de pago del alumno' },
+      { status: 500 }
+    );
+  }
+}
+
 export async function POST(req) {
+  const auth = await requireTrainer();
+  if (auth.response) return auth.response;
+
   try {
     const data = await req.json();
     const {
@@ -253,51 +421,178 @@ export async function POST(req) {
 
     // Generar email único si no se provee
     const finalEmail = email || `alumno-${Date.now()}@motionlab.local`;
-    
-    let passwordHash = null;
-    if (password && password.trim() !== '') {
-      passwordHash = await bcrypt.hash(password, 10);
+
+    const perfil = {
+      objetivo: objetivo || 'Rendimiento',
+      deporte: deporte || 'Fitness General',
+      club: club === 'true' || club === true,
+      nivel: nivel || 'Principiante',
+      focos: focos || 'General',
+      disponibilidad: disponibilidad || '3 días',
+      rmEstimado: rmEstimado || '',
+      puntosDebiles: puntosDebiles || '',
+    };
+
+    const pesoNumerico = peso ? Number.parseFloat(String(peso).replace(',', '.')) : null;
+    const alturaNumerica = altura ? Number.parseFloat(String(altura).replace(',', '.')) : null;
+
+    // 1. Intentar guardar en PostgreSQL cuando la base de datos está configurada
+    if (process.env.DATABASE_URL) {
+      try {
+        let passwordHash = null;
+        if (password && password.trim() !== '') {
+          passwordHash = await bcrypt.hash(password, 10);
+        }
+
+        const nuevoAlumno = await prisma.usuario.create({
+          data: {
+            nombre: nombre || 'Sin Nombre',
+            apellido: apellido || '',
+            email: finalEmail.toLowerCase().trim(),
+            passwordHash,
+            whatsapp,
+            peso: Number.isFinite(pesoNumerico) ? pesoNumerico : null,
+            altura: Number.isFinite(alturaNumerica) ? alturaNumerica : null,
+            lesiones,
+            estadoPago: estadoPago || 'PENDIENTE',
+            tipoPlan: tipoPlan || 'BASE',
+            rol: 'ALUMNO',
+            perfilDeportivo: {
+              create: perfil,
+            }
+          },
+          include: {
+            perfilDeportivo: true,
+            rutinasComoAlumno: {
+              where: { estado: 'ACTIVA' },
+              select: { id: true, nombre: true, fechaAsignada: true },
+            },
+          }
+        });
+
+        return NextResponse.json({ success: true, alumno: nuevoAlumno });
+      } catch (error) {
+        console.warn('⚠️ No se pudo crear el alumno en PostgreSQL (se usará modo demo):', error.message);
+      }
     }
 
-    const nuevoAlumno = await prisma.usuario.create({
-      data: {
-        nombre: nombre || 'Sin Nombre',
-        apellido: apellido || '',
-        email: finalEmail.toLowerCase().trim(),
-        passwordHash,
-        whatsapp,
-        peso: peso ? parseFloat(peso) : null,
-        altura: altura ? parseFloat(altura) : null,
-        lesiones,
-        estadoPago: estadoPago || 'PENDIENTE',
-        tipoPlan: tipoPlan || 'BASE',
-        rol: 'ALUMNO',
-        perfilDeportivo: {
-          create: {
-            objetivo: objetivo || 'Rendimiento',
-            deporte: deporte || 'Fitness General',
-            club: club === 'true' || club === true,
-            nivel: nivel || 'Principiante',
-            focos: focos || 'General',
-            disponibilidad: disponibilidad || '3 días',
-            rmEstimado,
-            puntosDebiles
-          }
-        }
-      },
-      include: {
-        perfilDeportivo: true,
-        rutinasComoAlumno: {
-          where: { estado: 'ACTIVA' },
-          select: { id: true, nombre: true, fechaAsignada: true },
-        },
-      }
-    });
+    // 2. Respaldo en memoria para que el panel siga funcionando sin PostgreSQL
+    const nuevoId = `demo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const nuevoAlumno = {
+      id: nuevoId,
+      nombre: nombre || 'Sin Nombre',
+      apellido: apellido || '',
+      email: finalEmail.toLowerCase().trim(),
+      whatsapp: whatsapp || '',
+      peso: Number.isFinite(pesoNumerico) ? pesoNumerico : null,
+      altura: Number.isFinite(alturaNumerica) ? alturaNumerica : null,
+      lesiones: lesiones || '',
+      estadoPago: estadoPago || 'PENDIENTE',
+      tipoPlan: tipoPlan || 'BASE',
+      createdAt: new Date().toISOString(),
+      perfilDeportivo: perfil,
+      checkins: [],
+      alertaBienestar: 'VERDE',
+      consecutivosFatiga: 0,
+      sesionesBaseline: 0,
+      sesionesCompletadas: 0,
+      rutinasComoAlumno: [],
+      creadoEnDemo: true,
+    };
+
+    guardarAlumnoEnStore(nuevoId, nuevoAlumno);
 
     return NextResponse.json({ success: true, alumno: nuevoAlumno });
   } catch (error) {
     console.error('Error al crear alumno:', error);
     return NextResponse.json({ success: false, error: 'Error al crear el alumno' }, { status: 500 });
+  }
+}
+
+export async function DELETE(req) {
+  const auth = await requireTrainer();
+  if (auth.response) return auth.response;
+
+  try {
+    const { searchParams } = new URL(req.url);
+    let id = searchParams.get('id');
+    let enDesuso = searchParams.get('enDesuso') === 'true';
+    let ids = [];
+
+    try {
+      const body = await req.json();
+      if (body.id) id = body.id;
+      if (body.enDesuso !== undefined) enDesuso = Boolean(body.enDesuso);
+      if (Array.isArray(body.ids)) ids = body.ids;
+    } catch {
+      // Si no hay body JSON, se usan los searchParams
+    }
+
+    if (id) {
+      ids.push(id);
+    }
+
+    if (enDesuso) {
+      // Eliminar alumnos en desuso (con pago pendiente y sin sesiones)
+      let alumnosCandidatos = [];
+      if (process.env.DATABASE_URL) {
+        try {
+          const enDB = await prisma.usuario.findMany({
+            where: {
+              rol: 'ALUMNO',
+              estadoPago: 'PENDIENTE',
+              rutinasComoAlumno: { none: {} },
+            },
+            select: { id: true },
+          });
+          alumnosCandidatos = enDB.map((u) => u.id);
+        } catch (dbErr) {
+          console.warn('⚠️ Error al buscar alumnos en desuso en DB:', dbErr.message);
+        }
+      }
+
+      // También chequear en store y demo
+      const enStore = obtenerAlumnosDeStore()
+        .filter((a) => a.estadoPago === 'PENDIENTE' && (!a.sesionesCompletadas || a.sesionesCompletadas === 0))
+        .map((a) => a.id);
+
+      const todosCandidatos = Array.from(new Set([...alumnosCandidatos, ...enStore]));
+      ids = Array.from(new Set([...ids, ...todosCandidatos]));
+    }
+
+    if (ids.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'No se especificaron alumnos para eliminar' },
+        { status: 400 }
+      );
+    }
+
+    for (const alumnoId of ids) {
+      if (process.env.DATABASE_URL) {
+        try {
+          await prisma.rutinaRealizada.deleteMany({ where: { alumnoId } });
+          await prisma.chequeoBienestar.deleteMany({ where: { alumnoId } });
+          await prisma.usuario.delete({ where: { id: alumnoId } });
+        } catch (dbErr) {
+          console.warn(`⚠️ Error al eliminar alumno ${alumnoId} en DB:`, dbErr.message);
+        }
+      }
+      eliminarAlumnoDeStore(alumnoId);
+    }
+
+    return NextResponse.json({
+      success: true,
+      mensaje: ids.length === 1
+        ? 'Perfil de alumno eliminado exitosamente'
+        : `${ids.length} perfiles eliminados exitosamente`,
+      eliminados: ids,
+    });
+  } catch (error) {
+    console.error('Error al procesar eliminación de alumnos:', error);
+    return NextResponse.json(
+      { success: false, error: 'Error al eliminar alumnos' },
+      { status: 500 }
+    );
   }
 }
 

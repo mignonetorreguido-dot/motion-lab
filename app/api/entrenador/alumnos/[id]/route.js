@@ -1,77 +1,74 @@
 import { NextResponse } from 'next/server';
+import { actualizarAlumno } from '@/lib/actualizarAlumno';
+import { requireTrainer } from '@/lib/requireTrainer';
 import prisma from '@/lib/prisma';
-import bcrypt from 'bcryptjs';
+import { eliminarAlumnoDeStore } from '@/lib/fallbackStore';
 
 export async function PUT(req, { params }) {
-  try {
-    const alumnoId = params.id;
-    const data = await req.json();
+  const auth = await requireTrainer();
+  if (auth.response) return auth.response;
 
-    const {
-      nombre, apellido, email, password, whatsapp, peso, altura, lesiones, estadoPago, tipoPlan,
-      objetivo, deporte, club, nivel, focos, disponibilidad, rmEstimado, puntosDebiles
-    } = data;
-    
-    // Preparar campos para actualizar el usuario base
-    const updateData = {
-      nombre,
-      apellido,
-      email,
-      whatsapp,
-    };
-    
-    // Si se proporciona una contraseña, actualizarla
-    if (password && password.trim() !== '') {
-      updateData.passwordHash = await bcrypt.hash(password, 10);
+  try {
+    let data;
+    try {
+      data = await req.json();
+    } catch {
+      return NextResponse.json(
+        { success: false, error: 'Los datos enviados no son válidos' },
+        { status: 400 }
+      );
     }
 
-    // Actualizar usuario
-    const alumnoActualizado = await prisma.usuario.update({
-      where: { id: alumnoId },
-      data: {
-        ...updateData,
-        peso: peso ? parseFloat(peso) : null,
-        altura: altura ? parseFloat(altura) : null,
-        lesiones,
-        estadoPago,
-        tipoPlan,
-        perfilDeportivo: {
-          upsert: {
-            create: {
-              objetivo: objetivo || 'Rendimiento',
-              deporte: deporte || 'Fitness General',
-              club: club || false,
-              nivel: nivel || 'Principiante',
-              focos: focos || 'General',
-              disponibilidad: disponibilidad || '3 días',
-              rmEstimado,
-              puntosDebiles
-            },
-            update: {
-              objetivo,
-              deporte,
-              club,
-              nivel,
-              focos,
-              disponibilidad,
-              rmEstimado,
-              puntosDebiles
-            }
-          }
-        }
-      },
-      include: {
-        perfilDeportivo: true,
-        rutinasComoAlumno: {
-          where: { estado: 'ACTIVA' },
-          select: { id: true, nombre: true, fechaAsignada: true },
-        },
-      }
-    });
+    const resultado = await actualizarAlumno(params.id, data);
 
-    return NextResponse.json({ success: true, alumno: alumnoActualizado });
+    if (!resultado.success) {
+      return NextResponse.json(resultado, { status: 400 });
+    }
+
+    return NextResponse.json(resultado);
   } catch (error) {
     console.error('Error al actualizar alumno:', error);
-    return NextResponse.json({ success: false, error: 'Error al actualizar el alumno' }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: 'Error al actualizar el alumno' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(req, { params }) {
+  const auth = await requireTrainer();
+  if (auth.response) return auth.response;
+
+  try {
+    const { id } = params;
+    if (!id) {
+      return NextResponse.json(
+        { success: false, error: 'Falta el identificador del alumno' },
+        { status: 400 }
+      );
+    }
+
+    if (process.env.DATABASE_URL) {
+      try {
+        await prisma.rutinaRealizada.deleteMany({ where: { alumnoId: id } });
+        await prisma.chequeoBienestar.deleteMany({ where: { alumnoId: id } });
+        await prisma.usuario.delete({ where: { id } });
+      } catch (dbErr) {
+        console.warn('⚠️ No se pudo eliminar el alumno en PostgreSQL:', dbErr.message);
+      }
+    }
+
+    eliminarAlumnoDeStore(id);
+
+    return NextResponse.json({
+      success: true,
+      mensaje: 'Perfil de alumno eliminado exitosamente',
+    });
+  } catch (error) {
+    console.error('Error al eliminar alumno:', error);
+    return NextResponse.json(
+      { success: false, error: 'Error al eliminar el alumno' },
+      { status: 500 }
+    );
   }
 }

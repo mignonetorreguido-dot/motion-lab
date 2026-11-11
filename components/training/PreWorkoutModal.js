@@ -34,11 +34,11 @@ export default function PreWorkoutModal({
   if (!isOpen) return null;
 
   const nivelesEnergia = [
-    { valor: 1, label: 'Agotado/a', icon: '🪫', desc: 'Batería baja' },
-    { valor: 2, label: 'Bajo', icon: '🔋', desc: 'Poco resto' },
-    { valor: 3, label: 'Normal', icon: '🔋', desc: 'Equilibrado' },
-    { valor: 4, label: 'Con ganas', icon: '⚡', desc: 'Buena vibra' },
-    { valor: 5, label: 'A tope', icon: '🔥', desc: '100% energía' },
+    { valor: 1, label: 'Agotado/a', icon: '🪫', desc: 'Sin energía' },
+    { valor: 2, label: 'Cansado/a', icon: '😴', desc: 'Poco resto' },
+    { valor: 3, label: 'Normal', icon: '😐', desc: 'Equilibrado' },
+    { valor: 4, label: 'Bien', icon: '🙂', desc: 'Buena energía' },
+    { valor: 5, label: 'Súper bien', icon: '🤩', desc: 'Al 100%' },
   ];
 
   const nivelesAnimo = [

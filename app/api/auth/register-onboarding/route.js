@@ -12,6 +12,7 @@
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import prisma from '@/lib/prisma';
+import { construirWhatsappOnboarding } from '@/lib/onboarding';
 
 export async function POST(request) {
   try {
@@ -45,6 +46,16 @@ export async function POST(request) {
       );
     }
 
+    if (!whatsapp || !whatsapp.trim()) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Ingresá tu número de WhatsApp para que Matías pueda contactarte.',
+        },
+        { status: 400 }
+      );
+    }
+
     const emailNormalizado = email.toLowerCase().trim();
     let passwordHash = null;
 
@@ -69,7 +80,7 @@ export async function POST(request) {
         );
       }
 
-      // 2. Crear el Usuario en MySQL con estado de pago 'PENDIENTE'
+      // 2. Crear el Usuario en PostgreSQL con estado de pago 'PENDIENTE'
       usuarioGuardado = await prisma.usuario.create({
         data: {
           nombre: nombre.trim(),
@@ -104,44 +115,44 @@ export async function POST(request) {
       guardadoEnDb = true;
       console.log('✅ Alumno y perfil deportivo creados en Prisma:', usuarioGuardado.id);
     } catch (dbError) {
-      console.warn('⚠️ No se pudo guardar en MySQL vía Prisma (Modo Demo):', dbError.message);
+      console.warn('⚠️ No se pudo guardar en PostgreSQL vía Prisma (Modo Demo):', dbError.message);
       // Creamos un objeto simulado para continuar sin bloquear la experiencia
       usuarioGuardado = {
         id: 'demo-user-' + Date.now(),
         nombre,
         apellido,
         email: emailNormalizado,
+        whatsapp,
         tipoPlan,
         estadoPago: 'PENDIENTE',
       };
     }
 
     // 3. Generación del mensaje y enlace directo a WhatsApp con Matías
-    const telefonoMatias = process.env.NEXT_PUBLIC_WHATSAPP_PHONE || '5493624654911';
-    const planTexto = tipoPlan === 'PREMIUM' ? 'Plan Premium Personalizado' : 'Plan Base';
-    const focosTexto = Array.isArray(focos) ? focos.join(', ') : focos;
-
-    const textoMensaje = `¡Hola Matías! 👋 Acabo de completar mi registro en *Motion Lab*.\n\n` +
-      `👤 *Nombre:* ${nombre} ${apellido}\n` +
-      `📦 *Plan Elegido:* ${planTexto}\n` +
-      `🎯 *Objetivo:* ${objetivo} (${deporte || 'General'})\n` +
-      `💪 *Nivel:* ${nivel} | *Focos:* ${focosTexto || 'General'}\n` +
-      `📅 *Disponibilidad:* ${disponibilidad}\n` +
-      (rmEstimado ? `⚡ *RM:* ${rmEstimado}\n` : '') +
-      (lesiones ? `⚠️ *Lesiones:* ${lesiones}\n` : '') +
-      `\nQuiero coordinar el pago para que puedas activar mi cuenta y comenzar con mi rutina. ¡Gracias!`;
-
-    const whatsappUrl = `https://wa.me/${telefonoMatias}?text=${encodeURIComponent(textoMensaje)}`;
+    const whatsappUrl = construirWhatsappOnboarding({
+      nombre,
+      apellido,
+      tipoPlan,
+      objetivo,
+      deporte,
+      nivel,
+      focos,
+      disponibilidad,
+      rmEstimado,
+      lesiones,
+      whatsapp,
+    });
 
     return NextResponse.json({
       success: true,
       mensaje: guardadoEnDb
         ? '¡Cuenta y perfil deportivo creados exitosamente! Estado: Pendiente de pago.'
-        : '¡Registro simulado con éxito (modo demo sin MySQL activo)!',
+        : '¡Registro simulado con éxito (modo demo sin PostgreSQL activo)!',
       usuario: {
         id: usuarioGuardado.id,
         nombre: usuarioGuardado.nombre,
         email: usuarioGuardado.email,
+        whatsapp: usuarioGuardado.whatsapp || whatsapp || '',
         tipoPlan: usuarioGuardado.tipoPlan,
         estadoPago: usuarioGuardado.estadoPago,
       },

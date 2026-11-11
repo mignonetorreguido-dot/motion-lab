@@ -5,31 +5,36 @@
  * COMPONENTE: Contenedor Principal de Entrenamiento (components/training/TrainingContainer.js)
  * ========================================================================
  * - Orquesta la navegación entre el Hub Semanal y la Planilla Activa.
- * - Persiste en memoria y localStorage los días completados y las series guardadas.
- * - Al finalizar un día:
- *   1. Lo marca como 'COMPLETADO'.
- *   2. Guarda las series, cargas y notas registradas para poder editarlas luego.
- *   3. Avanza automáticamente el día sugerido ("SUGERIDO PARA HOY") al próximo día disponible.
+ * - Sincroniza en tiempo real las rutinas asignadas por Matías (API como fuente de verdad).
+ * - Persiste por cada alumnoId su progreso local de días completados y series guardadas.
  */
 
 import { useState, useEffect } from 'react';
 import StudentHub from './StudentHub';
 import WorkoutView from './WorkoutView';
 
-const STORAGE_PLAN_KEY = 'motion_lab_plan_semanal_v2';
-const STORAGE_RUTINAS_KEY = 'motion_lab_rutinas_guardadas_v2';
-const STORAGE_DIA_HOY_KEY = 'motion_lab_dia_hoy_v2';
+const getStorageKey = (baseKey, id) => `${baseKey}_${id || 'demo'}`;
 
-export default function TrainingContainer({ alumnoId = 'demo-alumno-1' }) {
+export default function TrainingContainer({
+  alumnoId = 'demo-alumno-1',
+  alumnoNombre = '',
+  estadoPago = 'ACTIVO',
+  googleFitTestActivo = false,
+}) {
   const [diaSeleccionadoId, setDiaSeleccionadoId] = useState(null);
   const [planSemanal, setPlanSemanal] = useState([]);
   const [rutinasGuardadas, setRutinasGuardadas] = useState({});
-  const [diaHoyId, setDiaHoyId] = useState('dia-1');
+  const [diaHoyId, setDiaHoyId] = useState(null);
   const [cargando, setCargando] = useState(true);
 
-  // Cargar estado inicial desde localStorage o desde la API
+  const storagePlanKey = getStorageKey('motion_lab_plan_v3', alumnoId);
+  const storageRutinasKey = getStorageKey('motion_lab_rutinas_v3', alumnoId);
+  const storageDiaHoyKey = getStorageKey('motion_lab_dia_hoy_v3', alumnoId);
+
+  // Cargar estado desde la API (servidor como prioridad) y sincronizar progreso local
   useEffect(() => {
     async function cargarPlan() {
+      setCargando(true);
       try {
         let planLocal = null;
         let rutinasLocal = null;
@@ -37,9 +42,9 @@ export default function TrainingContainer({ alumnoId = 'demo-alumno-1' }) {
 
         if (typeof window !== 'undefined') {
           try {
-            const rawPlan = localStorage.getItem(STORAGE_PLAN_KEY);
-            const rawRutinas = localStorage.getItem(STORAGE_RUTINAS_KEY);
-            const rawDiaHoy = localStorage.getItem(STORAGE_DIA_HOY_KEY);
+            const rawPlan = localStorage.getItem(storagePlanKey);
+            const rawRutinas = localStorage.getItem(storageRutinasKey);
+            const rawDiaHoy = localStorage.getItem(storageDiaHoyKey);
 
             if (rawPlan) planLocal = JSON.parse(rawPlan);
             if (rawRutinas) rutinasLocal = JSON.parse(rawRutinas);
@@ -49,27 +54,41 @@ export default function TrainingContainer({ alumnoId = 'demo-alumno-1' }) {
           }
         }
 
-        // Consultamos la API base
+        // Consultamos la API con el alumnoId real
         const res = await fetch(`/api/rutinas?alumnoId=${alumnoId}`);
         const data = await res.json();
 
-        if (data.success) {
-          // Si ya teníamos progreso guardado localmente, lo respetamos
-          if (planLocal && planLocal.length > 0) {
-            setPlanSemanal(planLocal);
-          } else if (data.planSemanal) {
-            setPlanSemanal(data.planSemanal);
+        if (data.success && data.planSemanal && data.planSemanal.length > 0) {
+          // La rutina del servidor es la fuente de verdad actualizada por el entrenador
+          let planFinal = data.planSemanal;
+
+          // Si el alumno ya completó días localmente en este mismo plan, combinamos el estado
+          if (planLocal && Array.isArray(planLocal)) {
+            const completadosMap = new Map(
+              planLocal.filter((p) => p.estado === 'COMPLETADO').map((p) => [p.id, p])
+            );
+
+            planFinal = data.planSemanal.map((dia) => {
+              if (completadosMap.has(dia.id)) {
+                return { ...dia, ...completadosMap.get(dia.id) };
+              }
+              return dia;
+            });
           }
+
+          setPlanSemanal(planFinal);
+          setDiaHoyId(diaHoyLocal || data.diaHoyId || planFinal[0]?.id);
 
           if (rutinasLocal) {
             setRutinasGuardadas(rutinasLocal);
           }
-
-          if (diaHoyLocal) {
-            setDiaHoyId(diaHoyLocal);
-          } else if (data.diaHoyId) {
-            setDiaHoyId(data.diaHoyId);
-          }
+        } else if (planLocal && planLocal.length > 0) {
+          // Si no hay rutinas en la API pero sí en cache local de este alumno
+          setPlanSemanal(planLocal);
+          if (diaHoyLocal) setDiaHoyId(diaHoyLocal);
+          if (rutinasLocal) setRutinasGuardadas(rutinasLocal);
+        } else {
+          setPlanSemanal([]);
         }
       } catch (err) {
         console.error('Error cargando plan semanal:', err);
@@ -77,8 +96,9 @@ export default function TrainingContainer({ alumnoId = 'demo-alumno-1' }) {
         setCargando(false);
       }
     }
+
     cargarPlan();
-  }, [alumnoId]);
+  }, [alumnoId, storagePlanKey, storageRutinasKey, storageDiaHoyKey]);
 
   // Manejar cuando el alumno finaliza o guarda un día de entrenamiento
   const handleFinalizarDia = (rutinaActualizada) => {
@@ -91,7 +111,7 @@ export default function TrainingContainer({ alumnoId = 'demo-alumno-1' }) {
     };
     setRutinasGuardadas(nuevasRutinas);
 
-    // 2. Marcar el día como COMPLETADO en el cronograma semanal y registrar sus check-ins
+    // 2. Marcar el día como COMPLETADO en el cronograma semanal
     const nuevoPlan = planSemanal.map((dia) => {
       if (dia.id === diaSeleccionadoId) {
         return { 
@@ -110,17 +130,17 @@ export default function TrainingContainer({ alumnoId = 'demo-alumno-1' }) {
     });
     setPlanSemanal(nuevoPlan);
 
-    // 3. Calcular el próximo día sugerido (el primer día no completado en secuencia)
+    // 3. Próximo día sugerido (el primer día no completado)
     const proximoDiaNoCompletado = nuevoPlan.find((dia) => dia.estado !== 'COMPLETADO');
     const nuevoDiaHoy = proximoDiaNoCompletado ? proximoDiaNoCompletado.id : nuevoPlan[0]?.id;
     setDiaHoyId(nuevoDiaHoy);
 
-    // 4. Persistir en localStorage
+    // 4. Persistir en localStorage con la clave aislada de este alumno
     if (typeof window !== 'undefined') {
       try {
-        localStorage.setItem(STORAGE_PLAN_KEY, JSON.stringify(nuevoPlan));
-        localStorage.setItem(STORAGE_RUTINAS_KEY, JSON.stringify(nuevasRutinas));
-        localStorage.setItem(STORAGE_DIA_HOY_KEY, nuevoDiaHoy);
+        localStorage.setItem(storagePlanKey, JSON.stringify(nuevoPlan));
+        localStorage.setItem(storageRutinasKey, JSON.stringify(nuevasRutinas));
+        localStorage.setItem(storageDiaHoyKey, nuevoDiaHoy);
       } catch (e) {
         console.error('Error guardando en localStorage:', e);
       }
@@ -130,12 +150,12 @@ export default function TrainingContainer({ alumnoId = 'demo-alumno-1' }) {
     setDiaSeleccionadoId(null);
   };
 
-  // Función para reiniciar el progreso de prueba
+  // Función para reiniciar el progreso
   const handleReiniciarProgreso = () => {
     if (typeof window !== 'undefined') {
-      localStorage.removeItem(STORAGE_PLAN_KEY);
-      localStorage.removeItem(STORAGE_RUTINAS_KEY);
-      localStorage.removeItem(STORAGE_DIA_HOY_KEY);
+      localStorage.removeItem(storagePlanKey);
+      localStorage.removeItem(storageRutinasKey);
+      localStorage.removeItem(storageDiaHoyKey);
     }
     const planReiniciado = planSemanal.map((dia, idx) => ({
       ...dia,
@@ -143,7 +163,7 @@ export default function TrainingContainer({ alumnoId = 'demo-alumno-1' }) {
     }));
     setPlanSemanal(planReiniciado);
     setRutinasGuardadas({});
-    setDiaHoyId('dia-1');
+    setDiaHoyId(planReiniciado[0]?.id || null);
   };
 
   if (cargando) {
@@ -163,6 +183,7 @@ export default function TrainingContainer({ alumnoId = 'demo-alumno-1' }) {
         diaHoyId={diaHoyId}
         onSeleccionarDia={(id) => setDiaSeleccionadoId(id)}
         onReiniciarProgreso={handleReiniciarProgreso}
+        googleFitTestActivo={googleFitTestActivo}
       />
     );
   }
@@ -170,7 +191,7 @@ export default function TrainingContainer({ alumnoId = 'demo-alumno-1' }) {
   // 2. Si se seleccionó un día, abrir la planilla interactiva de ese día
   const diaSeleccionado = planSemanal.find((d) => d.id === diaSeleccionadoId);
   const esModoEdicion = diaSeleccionado?.estado === 'COMPLETADO';
-  const rutinaInicial = rutinasGuardadas[diaSeleccionadoId] || null;
+  const rutinaInicial = rutinasGuardadas[diaSeleccionadoId] || diaSeleccionado?.bloques ? diaSeleccionado : null;
 
   return (
     <WorkoutView

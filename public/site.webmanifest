@@ -1,0 +1,31 @@
+{
+  "name": "MOTION LAB – Preparación Física y Rendimiento",
+  "short_name": "MOTION LAB",
+  "description": "Preparación física y rendimiento en Resistencia, Chaco. Entrenamiento de fuerza, velocidad y potencia con planificación personalizada. Plan Base y Plan Performance.",
+  "lang": "es-AR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#05070c",
+  "theme_color": "#0066ff",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

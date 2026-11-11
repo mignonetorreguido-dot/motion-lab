@@ -1,94 +1,69 @@
+'use client';
+
 /**
  * ========================================================================
- * COMPONENTE: Pie de Página MOTION LAB (Footer.js)
+ * COMPONENTE: Footer Global Institucional (components/Footer.js)
  * ========================================================================
- * Incluye logotipo oficial, enlaces rápidos, canales de contacto y
- * aviso de responsabilidad médica deportiva.
+ * Footer institucional de Motion Lab desarrollado por FLEG TECH.
+ * Integrado globalmente en todas las vistas y rutas de la aplicación:
+ * - Izquierda: © 2026 FLEG TECH. Todos los derechos reservados. · Privacidad · Términos
+ * - Derecha: Aviso médico de consulta con profesional de la salud.
+ * - Estilo: bg-[#080c14], borde sutil border-slate-800/80, 100% responsive.
  */
 
-import { Instagram, Mail, MessageCircle } from 'lucide-react';
-import MotionLabLogo from './MotionLabLogo';
+import Link from 'next/link';
+import { useTheme } from './ThemeProvider';
 
-export default function Footer() {
+export default function Footer({ className = '' }) {
   const anioActual = new Date().getFullYear();
+  const { isSunlight } = useTheme();
 
   return (
-    <footer className="bg-[#030509] border-t border-slate-800 text-slate-400 py-12">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <footer
+      role="contentinfo"
+      aria-label="Información institucional y aviso médico"
+      className={`w-full border-t transition-colors duration-200 select-none ${
+        isSunlight
+          ? 'bg-slate-100 border-slate-300 text-slate-600'
+          : 'bg-[#080c14] border-slate-800/80 text-slate-500'
+      } ${className}`}
+    >
+      <div className="max-w-7xl mx-auto flex flex-col gap-2 text-center text-xs py-6 px-4 md:flex-row md:justify-between md:items-center md:text-left md:px-8">
         
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-12">
-          
-          {/* COLUMNA 1: Marca y Misión */}
-          <div className="md:col-span-2 space-y-4">
-            <MotionLabLogo />
-            <p className="text-xs sm:text-sm text-slate-400 max-w-md leading-relaxed">
-              Centro de rendimiento deportivo y planificación física individualizada. Ciencia, biomecánica y sobrecarga progresiva aplicadas a tu objetivo.
-            </p>
-          </div>
-
-          {/* COLUMNA 2: Enlaces Rápidos */}
-          <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-white mb-4">
-              Navegación
-            </h4>
-            <ul className="space-y-2.5 text-xs sm:text-sm">
-              <li>
-                <a href="#sobre-mi" className="hover:text-sky-400 transition-colors">
-                  Metodología MOTION LAB
-                </a>
-              </li>
-              <li>
-                <a href="#planes" className="hover:text-sky-400 transition-colors">
-                  Plan Base vs Plan Premium
-                </a>
-              </li>
-              <li>
-                <a href="#faq" className="hover:text-sky-400 transition-colors">
-                  Preguntas Frecuentes
-                </a>
-              </li>
-            </ul>
-          </div>
-
-          {/* COLUMNA 3: Canales de Contacto */}
-          <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-white mb-4">
-              Canales Oficiales
-            </h4>
-            <ul className="space-y-2.5 text-xs sm:text-sm">
-              <li className="flex items-center gap-2">
-                <MessageCircle className="w-4 h-4 text-sky-400" />
-                <a 
-                  href="https://wa.me/5493624654911" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="hover:text-white transition-colors"
-                >
-                  WhatsApp: +54 9 362 465-4911
-                </a>
-              </li>
-              <li className="flex items-center gap-2">
-                <Mail className="w-4 h-4 text-sky-400" />
-                <span>contacto@motionlab.fit</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <Instagram className="w-4 h-4 text-sky-400" />
-                <span className="hover:text-white cursor-pointer">@motionlab.performance</span>
-              </li>
-            </ul>
-          </div>
-
+        {/* IZQUIERDA: DERECHOS RESERVADOS Y ENLACES LEGALES */}
+        <div className="flex flex-wrap items-center justify-center md:justify-start gap-x-2 gap-y-1">
+          <span>
+            &copy; {anioActual}{' '}
+            <a
+              href="https://flegtech.vercel.app/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-bold text-slate-400 hover:text-cyan-400 hover:underline transition-colors"
+            >
+              FLEG TECH
+            </a>
+            . Todos los derechos reservados.
+          </span>
+          <span className="text-slate-600 select-none">&middot;</span>
+          <Link
+            href="/privacidad"
+            className="hover:text-cyan-400 hover:underline transition-colors"
+          >
+            Privacidad
+          </Link>
+          <span className="text-slate-600 select-none">&middot;</span>
+          <Link
+            href="/terminos"
+            className="hover:text-cyan-400 hover:underline transition-colors"
+          >
+            Términos
+          </Link>
         </div>
 
-        {/* LÍNEA FINAL */}
-        <div className="pt-8 border-t border-slate-900 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
-          <p>
-            © {anioActual} MOTION LAB. Todos los derechos reservados. Desarrollado con Next.js, React y MySQL.
-          </p>
-          <p className="text-[11px] text-slate-600 max-w-sm text-center sm:text-right">
-            Aviso médico: Consulta con un profesional de la salud antes de iniciar planes de entrenamiento de alta exigencia.
-          </p>
-        </div>
+        {/* DERECHA: AVISO MÉDICO OFICIAL */}
+        <p className="text-[11px] sm:text-xs font-normal text-slate-500 max-w-md md:text-right leading-relaxed">
+          Aviso médico: Consulta con un profesional de la salud antes de iniciar planes de entrenamiento de alta exigencia.
+        </p>
 
       </div>
     </footer>

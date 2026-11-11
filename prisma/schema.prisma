@@ -1,13 +1,13 @@
 // ========================================================================
 // ESQUEMA DE BASE DE DATOS PRISMA - MOTION LAB (prisma/schema.prisma)
 // ========================================================================
-// Prisma ORM conecta la aplicación Next.js con MySQL alojado en Railway
-// o entorno local. Modela los usuarios, autenticación NextAuth, perfiles
+// Prisma ORM conecta la aplicación Next.js con PostgreSQL alojado en Vercel
+// (Prisma Postgres) o un entorno local compatible. Modela los usuarios, autenticación NextAuth, perfiles
 // deportivos, rutinas en 3 bloques (Movilidad, Activación, Desarrollo),
 // ejercicios y series interactivas.
 
 datasource db {
-  provider = "mysql"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -268,4 +268,58 @@ model Serie {
   completado          Boolean            @default(false)
 
   @@map("series")
+}
+
+// ========================================================================
+// MODELO: ChequeoBienestar (Test de salud mental y bienestar)
+// ========================================================================
+// Guarda el resultado del chequeo de 10 preguntas que completa el alumno.
+// Se usan campos simples y texto para que el esquema funcione tanto en
+// PostgreSQL como en MySQL sin cambios.
+model ChequeoBienestar {
+  id               String   @id @default(cuid())
+  alumnoId         String
+  fecha            DateTime @default(now())
+
+  // Puntajes de 0 a 100 por dimensión
+  descanso         Int
+  estres           Int
+  animo            Int
+  energia          Int
+  motivacion       Int
+
+  // Resultado global y nivel: EQUILIBRIO, ATENCION o ALERTA
+  puntajeGeneral   Int
+  nivelGeneral     String
+
+  // Respuestas originales y recomendaciones en formato JSON serializado
+  respuestas       String?  @db.Text
+  recomendaciones  String?  @db.Text
+
+  // Comentario libre que el alumno quiera dejarle a Matías
+  comentario       String?  @db.Text
+
+  createdAt        DateTime @default(now())
+
+  @@index([alumnoId, fecha])
+  @@map("chequeos_bienestar")
+}
+
+// ========================================================================
+// MODELO: ImportacionAppleHealth (Resumen manual del export de Apple Salud)
+// ========================================================================
+// El ZIP completo se procesa en el navegador del alumno. Acá solo se guarda
+// un resumen JSON de los últimos 30 días (pasos, pulso, sueño y workouts).
+// La tabla se crea automáticamente en el primer uso desde
+// lib/appleHealthStore.js para no depender de una migración manual.
+model ImportacionAppleHealth {
+  id            String   @id @default(cuid())
+  alumnoId      String   @unique
+  resumen       Json
+  archivoNombre String?
+  archivoBytes  Int?
+  importadoEn   DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("apple_health_imports")
 }
